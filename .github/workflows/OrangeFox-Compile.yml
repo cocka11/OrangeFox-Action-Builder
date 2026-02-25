@@ -1,117 +1,59 @@
-name: OrangeFox - Build
+name: Build OrangeFox (garnet)
 
-# Credits to:
-# https://github.com/TeamWin
-# https://gitlab.com/OrangeFox
-# https://github.com/azwhikaru for Recovery Builder Template
-# And all Contributors in every repositories I used
+on: workflow_dispatch: inputs: MANIFEST_BRANCH: description: OrangeFox Manifest Branch required: true default: "12.1" DEVICE_TREE: description: Device Tree URL required: true DEVICE_TREE_BRANCH: description: Device Tree Branch required: true default: "android-14"
 
-on:
-  workflow_dispatch:
-    inputs:
-      MANIFEST_BRANCH:
-        description: 'OrangeFox Manifest Branch'
-        required: true
-        default: '12.1'
-        type: choice
-        options:
-        - 12.1
-        - 11.0
-      DEVICE_TREE:
-        description: 'OrangeFox Device Tree'
-        required: true
-        default: 'https://github.com/cd-Crypton/custom_recovery_tree_realme_nashc'
-      DEVICE_TREE_BRANCH:
-        description: 'OrangeFox Device Tree Branch'
-        required: true
-        default: 'android-12.1'
-      DEVICE_PATH:
-        description: 'Specify your Device Path'
-        required: true
-        default: 'device/realme/nashc'
-      DEVICE_NAME:
-        description: 'Specify your Device Codename'
-        required: true
-        default: 'nashc'
-      BUILD_TARGET:
-        description: 'Specify your Build Target'
-        required: true
-        default: 'recovery'
-        type: choice
-        options:
-        - boot
-        - recovery
-        - vendorboot
+jobs: build: runs-on: ubuntu-22.04
 
-jobs:
-  build:
-    name: Build OFR by ${{ github.actor }}
-    runs-on: ubuntu-latest
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    permissions:
-      contents: write
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-              
-    - name: Clean-up
-      uses: rokibhasansagar/slimhub_actions@main
+steps:
+  - name: Checkout
+    uses: actions/checkout@v4
 
-    - name: Swap Space
-      uses: pierotofy/set-swap-space@master
-      with:
-        swap-size-gb: 24
-      
-    - name: Build Environment
-      run: |
-        sudo apt install aria2 -y
-        git clone https://gitlab.com/OrangeFox/misc/scripts.git -b master
-        cd scripts
-        sudo bash setup/android_build_env.sh
-      
-    - name: Set-up Manifest
-      if: inputs.MANIFEST_BRANCH == '11.0' || inputs.MANIFEST_BRANCH == '12.1'
-      run: |
-        mkdir -p ${GITHUB_WORKSPACE}/OrangeFox
-        cd ${GITHUB_WORKSPACE}/OrangeFox
-        git config --global user.name "${{ github.actor }}"
-        git config --global user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
-        git clone https://gitlab.com/OrangeFox/sync.git -b master
-        cd sync
-        ./orangefox_sync.sh --branch ${{ inputs.MANIFEST_BRANCH }} --path ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}
+  - name: Install dependencies
+    run: |
+      sudo apt update
+      sudo apt install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev \
+      gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev \
+      libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig \
+      python3 rsync bc ccache libssl-dev
 
-    - name: Clone Device Tree
-      run: |
-        cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}
-        git clone ${{ inputs.DEVICE_TREE }} -b ${{ inputs.DEVICE_TREE_BRANCH }} ./${{ inputs.DEVICE_PATH }}
-        cd ${{ inputs.DEVICE_PATH }}
-        echo "COMMIT_ID=$(git rev-parse HEAD)" >> $GITHUB_ENV
+  - name: Configure git
+    run: |
+      git config --global user.name "github-actions"
+      git config --global user.email "actions@github.com"
 
-    - name: Building OrangeFox
-      run: |
-        cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}
-        set +e
-        source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true
-        set -e
-        lunch twrp_${{ inputs.DEVICE_NAME }}-eng && make clean && mka adbd ${{ inputs.BUILD_TARGET }}image
+  - name: Initialize OrangeFox source
+    run: |
+      mkdir OrangeFox
+      cd OrangeFox
+      repo init --depth=1 -u https://gitlab.com/OrangeFox/Manifest.git -b fox_${{ inputs.MANIFEST_BRANCH }}
+      repo sync -c --no-clone-bundle --no-tags -j$(nproc --all)
 
-    - name: Set Release Properties
-      run: |
-        echo "BUILD_DATE=$(TZ=Asia/Manila date +%Y%m%d)" >> $GITHUB_ENV
-        cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}
+  - name: Clone device tree
+    run: |
+      cd OrangeFox
+      git clone ${{ inputs.DEVICE_TREE }} -b ${{ inputs.DEVICE_TREE_BRANCH }} device/xiaomi/garnet
 
-    - name: Upload to Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}/out/target/product/${{ inputs.DEVICE_NAME }}/OrangeFox*.img
-          OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}/out/target/product/${{ inputs.DEVICE_NAME }}/OrangeFox*.zip
-        name: OrangeFox Recovery for ${{ inputs.DEVICE_NAME }} // ${{ env.BUILD_DATE }}
-        tag_name: ${{ github.run_id }}
-        body: |
-          ## OrangeFox Recovery Build - Unofficial
-          Build: fox_${{ inputs.MANIFEST_BRANCH }}
-          Device: [Device Tree/Branch](${{ inputs.DEVICE_TREE }}/tree/${{ inputs.DEVICE_TREE_BRANCH }})
-          Commit: Most recent [commit](${{ inputs.DEVICE_TREE }}/commit/${{ env.COMMIT_ID }}) during building.
+  - name: Build OrangeFox
+    run: |
+      cd OrangeFox
+      source build/envsetup.sh
+
+      export ALLOW_MISSING_DEPENDENCIES=true
+      export FOX_AB_DEVICE=1
+      export FOX_VIRTUAL_AB_DEVICE=1
+      export FOX_RECOVERY_VENDOR_BOOT_PARTITION=1
+      export FOX_NO_RECOVERY_PARTITION=1
+      export FOX_USE_TWRP_RECOVERY_IMAGE_BUILDER=1
+
+      bash build/tools/roomservice.py garnet || true
+
+      . device/xiaomi/garnet/vendorsetup.sh
+      lunch omni_garnet-eng
+
+      mka adbd vendorbootimage -j$(nproc --all)
+
+  - name: Upload artifact
+    uses: actions/upload-artifact@v4
+    with:
+      name: OrangeFox-garnet
+      path: OrangeFox/out/target/product/garnet/vendor_boot.img
